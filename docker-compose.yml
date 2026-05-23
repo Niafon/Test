@@ -1,0 +1,42 @@
+services:
+  source-postgres:
+    image: postgres:16
+    container_name: source-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: source_db
+      POSTGRES_USER: source_user
+      POSTGRES_PASSWORD: source_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - source_postgres_data:/var/lib/postgresql/data
+      - ./docker/source/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U source_user -d source_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  target-postgres:
+    image: postgres:16
+    container_name: target-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: target_db
+      POSTGRES_USER: target_user
+      POSTGRES_PASSWORD: target_password
+    ports:
+      - "5434:5432"
+    volumes:
+      - target_postgres_data:/var/lib/postgresql/data
+      - ./docker/target/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U target_user -d target_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  source_postgres_data:
+  target_postgres_data:
