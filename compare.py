@@ -129,6 +129,22 @@ def get_diff_column_attrs(
 
 
 def get_diff_primary_keys(
-    table_name: str,
+    source_pk, # Тип данных тут: Название таблицы и список полей, входящих в первичный ключ
+    target_pk,
 ):
-    target
+    diffs = []
+
+    common_tables = set(source_pk) & set(target_pk) # Находим общие таблицы с вот таким примером {"table": "users", "constrained_columns": ["id"]}
+    for table in sorted(common_tables):
+        source_pk_columns = source_pk[table].get("constrained_columns") or []
+        target_pk_columns = target_pk[table].get("constrained_columns") or []
+
+        if source_pk_columns != target_pk_columns:
+            diffs.append(
+                {
+                    "kind": "different_primary_key",
+                    "table": table,
+                    "source": sorted(source_pk_columns),
+                    "target": sorted(target_pk_columns),
+                }
+            )
