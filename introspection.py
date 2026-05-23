@@ -18,6 +18,14 @@ def get_primary_keys(engine: Engine, table_name: str) -> ReflectedPrimaryKeyCons
     inspector = inspect(engine)
     return inspector.get_pk_constraint(table_name)
 
+def get_primary_keys_map(engine: Engine, tables_name: list[str]) -> dict[str, ReflectedPrimaryKeyConstraint]:
+    result = {}
+
+    for table in tables_name:
+        result[table] = get_primary_keys(engine, table)
+
+    return result
+
 def get_foreign_keys(engine: Engine, table_name: str) -> List[ReflectedForeignKeyConstraint]:
     inspector = inspect(engine)
     return inspector.get_foreign_keys(table_name)
