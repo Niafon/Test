@@ -57,7 +57,7 @@ def describe_change(change: Change) -> str:
     kind = change["kind"]
     table = _table_label(change)
     # Далее можно понять и по ретурну че делает надо при каждом виде
-    # Описания генерировал, тк он хорошо понял контекст и написал много bolierplate текста и выборку 
+    # Описания генерировал, тк он хорошо понял контекст и написал много bolierplate текста и выборку
     if kind == "missing_table":
         return (
             f"Таблица '{table}' есть в эталоне, но отсутствует в целевой БД. "
@@ -188,6 +188,9 @@ def describe_change(change: Change) -> str:
 
     return f"Неизвестный тип изменения: {kind}"
 
+# Тут у колонок есть 3 прикола - если null был и становиться не нул, то это может упасть, если не указано дефолтное значение.
+#  Если дефолтное значение есть, то это безопасно. И если колонка была nullable,
+#  то это тоже безопасно, тк null останется валидным значением.
 
 def classify_missing_column(change: Change) -> str:
     if change.get("source_nullable"):
@@ -196,6 +199,7 @@ def classify_missing_column(change: Change) -> str:
         return "safe"
     return "risky"
 
+# Классифицируем изменения по типам
 
 def classify_changes(changes: list[Change]) -> dict[str, list[Change]]:
     plan: dict[str, list[Change]] = {
@@ -208,13 +212,16 @@ def classify_changes(changes: list[Change]) -> dict[str, list[Change]]:
         change["description"] = describe_change(change)
 
         kind = change["kind"]
-
+        # Добавить таблицу - норм, ведь данные нельзя потерять
         if kind == "missing_table":
             plan["safe"].append(change)
-
+        # Колонку тоже ок - но мы смотрим на проблему сверху беря функциую оттуда
         elif kind == "missing_column":
             plan[classify_missing_column(change)].append(change)
-
+        # При потенри индекса, если уникальный, то это может быть рискованно,
+        #  тк удаление уникального индекса может привести к появлению дублей,
+        #  которые раньше не могли появиться. Если индекс не уникальный,
+        #  то его удаление - это просто потеря оптимизации, но не потеря данных, так что это безопасно.
         elif kind == "missing_index":
             if (change.get("source") or {}).get("unique"):
                 plan["risky"].append(change)

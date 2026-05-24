@@ -36,7 +36,6 @@ from introspection import (
 # Изменения в структуре бд, которые мы будем собирать и возвращать в виде отчета
 Change = dict[str, Any]
 
-
 # Собираем полное описание таблицы для отчета
 def collect_table_definition(
     engine: Engine, table_name: str, schema: str | None = None

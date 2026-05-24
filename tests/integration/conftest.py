@@ -13,15 +13,11 @@ DROP SCHEMA ... CASCADE.
 Если БД недоступны, все интеграционные тесты пропускаются.
 """
 import os
-import sys
 import uuid
-from pathlib import Path
 
 import pytest
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import OperationalError
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 SOURCE_URL = os.environ.get(
     "TEST_SOURCE_URL",

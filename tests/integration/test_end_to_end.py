@@ -4,13 +4,7 @@
 generate_sql -> apply -> снова introspection. Все объекты создаются во временных
 схемах (см. conftest.py), поэтому существующие public.* данные не трогаются.
 """
-import sys
-from pathlib import Path
-
-import pytest
 from sqlalchemy import Engine, text
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from apply import apply_sql_text
 from compare_database import compare_databases

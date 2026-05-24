@@ -1,7 +1,4 @@
 import json
-import re
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Literal, cast
 
 from fastapi import FastAPI, HTTPException
@@ -14,6 +11,7 @@ from compare_database import compare_databases
 from config import settings
 from db import create_db_engine
 from plan import classify_changes
+from reports_meta import REPORT_ID_RE, REPORTS_DIR, utc_now_iso_z, utc_now_report_id
 from sql_generator import generate_sql, qualified_name, quote_ident, quote_ident_list
 
 
@@ -23,13 +21,6 @@ app = FastAPI(title="DB Diff API")
 # Один шаг = один запрос: URLs обеих БД приходят прямо в /generate,
 # движок живет только на время запроса. Никакого глобального state -
 # /generate можно дернуть холодным процессом, и он сразу даст отчет.
-REPORTS_DIR = Path(__file__).parent / "reports"
-
-# report_id всегда генерируется нами в формате YYYYMMDDTHHMMSS_<mode> - это
-# единственный вид id, который может попасть в файловую систему. Любой другой
-# вход на эндпойнтах /apply/{report_id} отклоняем, иначе через ".." или
-# абсолютные пути можно прочитать/перезаписать чужие файлы.
-REPORT_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}_(safe|risky|destructive)$")
 
 Mode = Literal["safe", "risky", "destructive"]
 Change = dict[str, Any]
@@ -120,8 +111,7 @@ def save_report(
     diagnostics: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    now = datetime.now(timezone.utc)
-    report_id = f"{now.strftime('%Y%m%dT%H%M%S')}_{mode}"
+    report_id = utc_now_report_id(mode)
     sql_path = REPORTS_DIR / f"{report_id}.sql"
     meta_path = REPORTS_DIR / f"{report_id}.json"
 
@@ -129,7 +119,7 @@ def save_report(
     meta = {
         "report_id": report_id,
         "mode": mode,
-        "created_at": now.isoformat().replace("+00:00", "Z"),
+        "created_at": utc_now_iso_z(),
         "changes": changes,
         "diagnostics": diagnostics or [],
     }

@@ -2,11 +2,6 @@
 compare.py получает уже распарсенные SQLAlchemy-структуры, поэтому достаточно
 передавать список dict-ов в форме reflection-результатов.
 """
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
 from compare import (
     freeze_value,
     get_diff_check_constraints,

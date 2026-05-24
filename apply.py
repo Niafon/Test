@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,14 +11,7 @@ from sqlalchemy.engine import Engine
 
 from config import settings
 from db import create_db_engine
-
-
-REPORTS_DIR = Path(__file__).parent / "reports"
-
-# См. main.py: report_id всегда имеет формат YYYYMMDDTHHMMSS_<mode>. Любой
-# другой вход в save_apply_result отклоняем, чтобы '..' или абсолютный путь
-# не позволил записать файл за пределами REPORTS_DIR.
-_REPORT_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}_(safe|risky|destructive)$")
+from reports_meta import REPORT_ID_RE, REPORTS_DIR, utc_now_iso_z, utc_now_report_id
 
 
 def _dollar_quote_tag(sql_text: str, pos: int) -> str | None:
@@ -237,12 +228,12 @@ def save_apply_result(
     # отвалидирован в main.validate_report_id. Здесь проверяем ещё раз как
     # defense-in-depth, чтобы любой другой вызывающий код не записал файл за
     # пределы REPORTS_DIR.
-    if not _REPORT_ID_RE.match(report_id):
+    if not REPORT_ID_RE.match(report_id):
         raise ValueError(f"invalid report_id format: {report_id!r}")
     post_apply = summarize_post_apply(target_url) if result["status"] == "ok" else None
     payload = {
         "report_id": report_id,
-        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "created_at": utc_now_iso_z(),
         "status": result["status"],
         "executed_count": result.get("executed_count", 0),
         "failed_statement": result.get("failed_statement"),
@@ -309,8 +300,8 @@ def main(argv: list[str] | None = None) -> int:
     # не подходит, синтезируем id на основе текущего времени, чтобы apply всё
     # же отчитался файлом.
     candidate_id = sql_path.stem
-    if not _REPORT_ID_RE.match(candidate_id):
-        candidate_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}_safe"
+    if not REPORT_ID_RE.match(candidate_id):
+        candidate_id = utc_now_report_id("safe")
     saved_result = save_apply_result(candidate_id, result, target_url)
 
     if result["status"] == "ok":

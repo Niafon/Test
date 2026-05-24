@@ -224,18 +224,24 @@ def get_diff_primary_keys(
     return diffs
 
 # Тут кароче мы нормализуем атрибуты тк они по разному могу бывть в бд
+def _portable_referred_schema(
+    fk: ReflectedForeignKeyConstraint, owner_schema: str | None
+) -> str | None:
+    # FK на свою же схему -> referred_schema=None, иначе при разных именах
+    # схем в source и target same-schema FK ошибочно классифицируется как
+    # разный, и при apply SQL ссылается на source-имя схемы.
+    referred_schema = fk.get("referred_schema")
+    if referred_schema == owner_schema:
+        return None
+    return referred_schema
+
+
 def normalize_foreign_key(
     fk: ReflectedForeignKeyConstraint, owner_schema: str | None = None
 ) -> tuple[Any, ...]:
-    # FK на свою же схему -> referred_schema=None, иначе при разных именах
-    # схем в source и target same-schema FK ошибочно классифицируется как
-    # разный, и diff показывает фантомные missing/extra пары.
-    referred_schema = fk.get("referred_schema")
-    if referred_schema == owner_schema:
-        referred_schema = None
     return (
         tuple(fk.get("constrained_columns") or []),
-        referred_schema,
+        _portable_referred_schema(fk, owner_schema),
         fk.get("referred_table"),
         tuple(fk.get("referred_columns") or []),
         freeze_value(fk.get("options") or {}),
@@ -245,15 +251,10 @@ def normalize_foreign_key(
 def foreign_key_to_report(
     fk: ReflectedForeignKeyConstraint, owner_schema: str | None = None
 ) -> Change:
-    # Так же, как в normalize_foreign_key: same-schema ссылку обнуляем,
-    # чтобы при apply на другую схему SQL не ссылался на source-имя.
-    referred_schema = fk.get("referred_schema")
-    if referred_schema == owner_schema:
-        referred_schema = None
     return {
         "name": fk.get("name"),
         "constrained_columns": list(fk.get("constrained_columns") or []),
-        "referred_schema": referred_schema,
+        "referred_schema": _portable_referred_schema(fk, owner_schema),
         "referred_table": fk.get("referred_table"),
         "referred_columns": list(fk.get("referred_columns") or []),
         "options": dict(fk.get("options") or {}),
