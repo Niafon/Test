@@ -47,3 +47,12 @@ The reset script removes both containers and both named volumes, then recreates 
 - Destructive changes:
   - extra target columns `users.full_name`, `users.old_phone`, `products.old_vendor_code`
   - extra target table `legacy_notes`
+
+
+
+For testing (mock + with real db):
+  - python -m pytest tests/ -v
+
+6 модулей ядра + 6 файлов тестов
+32 теста: 25 unit (моки + golden-SQL) + 7 integration (реальные source/target БД)
+
