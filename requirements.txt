@@ -1,0 +1,15 @@
+# Runtime-зависимости DB Diff API.
+# Версии зафиксированы по локальному .venv - можете повышать по необходимости.
+
+fastapi==0.136.1
+uvicorn==0.47.0
+pydantic==2.13.4
+pydantic-settings==2.14.1
+python-dotenv==1.2.2
+SQLAlchemy==2.0.49
+# psycopg3 - драйвер PostgreSQL для SQLAlchemy URL вида postgresql+psycopg://...
+psycopg==3.3.4
+psycopg-binary==3.3.4
+
+# --- dev / tests ---
+pytest==9.0.3

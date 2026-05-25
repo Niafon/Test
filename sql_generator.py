@@ -1,3 +1,17 @@
+"""Генерация SQL по списку Change-записей.
+
+Принимает уже классифицированный список изменений (см. plan.py) и
+выдаёт цельный SQL-скрипт. В режимах safe/risky destructive-операции
+эмитятся закомментированными - чтобы случайный apply ничего не сломал.
+
+Алгоритм:
+1. Сортируем missing_table-изменения по зависимостям FK, чтобы при
+   CREATE TABLE родители создавались раньше детей.
+2. Циклические FK выносим отдельно: после всех CREATE TABLE идут
+   ALTER TABLE ADD CONSTRAINT FOREIGN KEY.
+3. Лишние unique-индексы, которые покрыты создаваемым UNIQUE
+   constraint'ом, выкидываем - PG создаёт нижележащий индекс сам.
+"""
 import re
 from typing import Any, Literal
 
@@ -9,16 +23,19 @@ NEXTVAL_RE = re.compile(r"^nextval\('([^']+)'::regclass\)$")
 
 
 def quote_ident(name: str | None) -> str:
+    """Заквотить идентификатор для PostgreSQL (двойные кавычки + экранирование)."""
     if name is None or name == "":
         raise ValueError("identifier cannot be empty")
     return '"' + name.replace('"', '""') + '"'
 
 
 def quote_ident_list(names: list[str]) -> str:
+    """Заквотить и через запятую соединить список идентификаторов."""
     return ", ".join(quote_ident(name) for name in names)
 
 
 def quote_literal(value: str) -> str:
+    """Заквотить SQL-литерал в одинарных кавычках с экранированием."""
     return "'" + value.replace("'", "''") + "'"
 
 
@@ -36,12 +53,17 @@ _SQL_EXPR_KEYWORDS = {
 
 
 def format_default(value: Any) -> str:
-    # SQLAlchemy reflection возвращает default в виде SQL-выражения для PG
-    # ("'hello'::text", "nextval(...)", "42"), но не для всех диалектов это
-    # гарантировано. Безопасный путь:
-    #   - числа/булевы значения -> SQL литералы
-    #   - строка, похожая на SQL-выражение (с (), ::, ключевое слово, кавычки) -> as-is
-    #   - всё остальное -> quote_literal, чтобы непроверенный текст не сломал SQL.
+    """Привести значение DEFAULT к корректному SQL-выражению.
+
+    SQLAlchemy reflection возвращает default в виде SQL-выражения для PG
+    ("'hello'::text", "nextval(...)", "42"), но не для всех диалектов
+    это гарантировано. Правила:
+      - числа/булевы значения -> SQL литералы;
+      - строка, похожая на SQL-выражение (с (), ::, ключевое слово,
+        кавычки) -> as-is;
+      - всё остальное -> quote_literal, чтобы непроверенный текст не
+        сломал SQL.
+    """
     if value is None:
         return "NULL"
     if isinstance(value, bool):
@@ -69,24 +91,29 @@ def format_default(value: Any) -> str:
 
 
 def qualified_name(name: str, schema: str | None = None) -> str:
+    """Собрать "schema"."name" или "name", если схема не задана."""
     if schema:
         return f"{quote_ident(schema)}.{quote_ident(name)}"
     return quote_ident(name)
 
 
 def table_name(change: Change) -> str:
+    """Получить заквоченное полное имя таблицы из change."""
     return qualified_name(change["table"], change.get("schema"))
 
 
 def table_key(name: str, schema: str | None = None) -> tuple[str | None, str]:
+    """Сформировать (schema, name) - hashable-ключ таблицы для сравнения."""
     return (schema, name)
 
 
 def constraint_name(name: str | None) -> str | None:
+    """Заквотить имя constraint'а, либо вернуть None, если имя пустое."""
     return quote_ident(name) if name else None
 
 
 def required_constraint_name(name: str | None, kind: str) -> str:
+    """То же, что constraint_name, но падает с ValueError при пустом имени."""
     quoted = constraint_name(name)
     if quoted is None:
         raise ValueError(f"{kind} constraint name is required to generate SQL")
@@ -94,6 +121,7 @@ def required_constraint_name(name: str | None, kind: str) -> str:
 
 
 def reference_table_name(fk: Change, fallback_schema: str | None = None) -> str:
+    """Собрать заквоченное имя таблицы, на которую ссылается FK."""
     referred_table = fk.get("referred_table")
     if not referred_table:
         raise ValueError("foreign key referred_table is required to generate SQL")
@@ -102,6 +130,12 @@ def reference_table_name(fk: Change, fallback_schema: str | None = None) -> str:
 
 
 def generate_sql(changes: list[Change], mode: Mode) -> str:
+    """Сформировать итоговый SQL-скрипт по списку изменений и режиму.
+
+    Сверху - шапка с предупреждениями для risky/destructive, далее
+    statement-ы в правильном порядке (CREATE TABLE с учётом FK-
+    зависимостей, отдельные ALTER TABLE для циклических FK).
+    """
     lines: list[str] = []
     comment_destructive = mode != "destructive"
 
@@ -136,6 +170,12 @@ def generate_sql(changes: list[Change], mode: Mode) -> str:
 
 
 def order_changes(changes: list[Change]) -> list[Change]:
+    """Расставить изменения в порядке, безопасном для применения.
+
+    missing_table сортируем топологически по FK-зависимостям; затем -
+    остальные изменения. Лишние missing_index, дублирующие
+    добавляемые UNIQUE constraint'ы, выкидываем.
+    """
     missing_tables = [change for change in changes if change["kind"] == "missing_table"]
     if not missing_tables:
         return changes
@@ -146,6 +186,12 @@ def order_changes(changes: list[Change]) -> list[Change]:
 
 
 def remove_redundant_missing_indexes(changes: list[Change]) -> list[Change]:
+    """Удалить missing_index, который покрывается добавляемым UNIQUE constraint'ом.
+
+    PG автоматически создаёт нижележащий unique-индекс при ADD UNIQUE,
+    поэтому отдельный CREATE UNIQUE INDEX был бы попыткой создать
+    индекс с тем же именем, что и сгенерированный constraint'ом.
+    """
     unique_keys = set()
     for change in changes:
         if change["kind"] != "missing_unique_constraint":
@@ -175,6 +221,13 @@ def remove_redundant_missing_indexes(changes: list[Change]) -> list[Change]:
 
 
 def sort_missing_tables(changes: list[Change]) -> list[Change]:
+    """Топологически отсортировать missing_table по FK-зависимостям.
+
+    Если таблица A ссылается на B и обе создаются - B должна идти
+    раньше A. Циклы рвутся "посещением": deferred FK вынесены наружу
+    в generate_create_table_fk_sql, так что для CREATE TABLE
+    достаточно частичного порядка.
+    """
     by_table = {
         table_key(change["table"], change.get("schema")): change for change in changes
     }
@@ -214,6 +267,7 @@ def change_to_sql(
     mode: Mode,
     comment_destructive: bool = True,
 ) -> list[str]:
+    """Диспетчер: подобрать генератор SQL по kind изменения и режиму."""
     kind = change["kind"]
 
     if kind == "missing_table":
@@ -296,6 +350,12 @@ def change_to_sql(
 
 
 def generate_create_table_sql(change: Change) -> list[str]:
+    """Собрать CREATE TABLE с колонками, PK, UNIQUE, CHECK и не-PK/UNIQUE индексами.
+
+    foreign_keys намеренно НЕ берём здесь: они эмитятся как отдельный
+    ALTER TABLE через generate_create_table_fk_sql, чтобы циклические
+    FK между новыми таблицами не ломали CREATE TABLE.
+    """
     table = table_name(change)
     schema = change.get("schema")
     source = change.get("source") or {}
@@ -304,9 +364,6 @@ def generate_create_table_sql(change: Change) -> list[str]:
     pk = source.get("primary_key") or {}
     uniques = source.get("unique_constraints") or []
     checks = source.get("check_constraints") or []
-    # foreign_keys намеренно НЕ берём здесь: они эмитятся как отдельный
-    # ALTER TABLE через generate_create_table_fk_sql, чтобы циклические FK
-    # между новыми таблицами не ломали CREATE TABLE.
     indexes = source.get("indexes") or []
 
     body: list[str] = []
@@ -364,6 +421,11 @@ def generate_create_table_sql(change: Change) -> list[str]:
 
 
 def generate_create_table_fk_sql(change: Change) -> list[str]:
+    """Сгенерировать ALTER TABLE ... ADD FOREIGN KEY для новой таблицы.
+
+    Выносим FK из CREATE TABLE, чтобы циклические зависимости не
+    блокировали создание самих таблиц.
+    """
     schema = change.get("schema")
     source = change.get("source") or {}
     table = table_name(change)
@@ -384,6 +446,7 @@ def generate_create_table_fk_sql(change: Change) -> list[str]:
 
 
 def generate_sequence_sql(source: Change, fallback_schema: str | None = None) -> list[str]:
+    """Найти колонки с DEFAULT nextval(...) и сгенерировать CREATE SEQUENCE."""
     lines: list[str] = []
     for col in source.get("columns") or []:
         default = col.get("default")
@@ -397,6 +460,7 @@ def generate_sequence_sql(source: Change, fallback_schema: str | None = None) ->
 
 
 def sequence_name(raw_name: str, fallback_schema: str | None = None) -> str:
+    """Привести имя sequence из nextval('...') к заквоченной форме."""
     if "." in raw_name:
         schema, name = raw_name.split(".", 1)
         return qualified_name(name, schema)
@@ -404,16 +468,24 @@ def sequence_name(raw_name: str, fallback_schema: str | None = None) -> str:
 
 
 def comment_line(text: str) -> str:
+    """Закомментировать строку SQL префиксом '-- '."""
     return f"-- {text}"
 
 
 def maybe_comment(lines: list[str], mode: Mode, comment_destructive: bool) -> list[str]:
+    """Закомментировать destructive-блок, если режим не destructive.
+
+    В safe/risky любой DROP/extra идёт как комментарий - даже случайный
+    apply ничего не удалит, пока пользователь явно не выберет
+    destructive.
+    """
     if mode == "destructive" or not comment_destructive:
         return lines
     return [comment_line(line) for line in lines]
 
 
 def generate_add_column_sql(change: Change) -> list[str]:
+    """ALTER TABLE ... ADD COLUMN с учётом nullable и default."""
     table = table_name(change)
     column = quote_ident(change["column"])
     col_type = change.get("source_type", "")
@@ -429,12 +501,15 @@ def generate_add_column_sql(change: Change) -> list[str]:
 
 
 def generate_alter_column_type_sql(change: Change) -> list[str]:
+    """ALTER TABLE ... ALTER COLUMN TYPE ... USING <col>::<new_type>.
+
+    USING явно конвертирует существующие значения - без этого PG падает
+    на реальном cast (например varchar -> integer). Для совместимого
+    расширения типа PG всё равно применит каст безопасно.
+    """
     table = table_name(change)
     column = quote_ident(change["column"])
     new_type = change.get("source", "")
-    # USING явно конвертирует существующие значения - без этого PG падает на
-    # реальном cast (например varchar -> integer). Для совместимого расширения
-    # типа PG всё равно применит каст безопасно.
     return [
         f"ALTER TABLE {table} ALTER COLUMN {column} TYPE {new_type} "
         f"USING {column}::{new_type};"
@@ -442,6 +517,7 @@ def generate_alter_column_type_sql(change: Change) -> list[str]:
 
 
 def generate_alter_column_nullable_sql(change: Change) -> list[str]:
+    """SET/DROP NOT NULL в зависимости от source-nullable."""
     table = table_name(change)
     column = quote_ident(change["column"])
 
@@ -451,6 +527,7 @@ def generate_alter_column_nullable_sql(change: Change) -> list[str]:
 
 
 def generate_alter_column_default_sql(change: Change) -> list[str]:
+    """SET/DROP DEFAULT в зависимости от source-default."""
     table = table_name(change)
     column = quote_ident(change["column"])
     source_default = change.get("source")
@@ -462,6 +539,7 @@ def generate_alter_column_default_sql(change: Change) -> list[str]:
 
 
 def generate_create_index_sql(change: Change) -> list[str]:
+    """CREATE [UNIQUE] INDEX по описанию из source."""
     table = table_name(change)
     index = change.get("source") or {}
     name = quote_ident(index.get("name"))
@@ -471,6 +549,7 @@ def generate_create_index_sql(change: Change) -> list[str]:
 
 
 def generate_add_unique_constraint_sql(change: Change) -> list[str]:
+    """ADD UNIQUE constraint, обёрнутый в guard для дублей при наличии имени."""
     table = table_name(change)
     unique = change.get("source") or {}
     name = constraint_name(unique.get("name"))
@@ -492,6 +571,12 @@ def generate_add_unique_constraint_sql(change: Change) -> list[str]:
 
 
 def generate_add_foreign_key_sql(change: Change) -> list[str]:
+    """ADD CONSTRAINT FOREIGN KEY ... NOT VALID.
+
+    NOT VALID создаёт ограничение без проверки исторических строк -
+    битые ссылки не валят apply, но новые записи уже защищены.
+    Пользователь сам решит, когда запускать VALIDATE CONSTRAINT.
+    """
     table = table_name(change)
     fk = change.get("source") or {}
     name = constraint_name(fk.get("name"))
@@ -513,6 +598,13 @@ def generate_guarded_unique_constraint_sql(
     columns: list[str],
     quoted_columns: str,
 ) -> str:
+    """Собрать DO $$ ... END $$ блок, защищающий ADD UNIQUE от дублей.
+
+    Перед ALTER TABLE проверяем, есть ли уже такой constraint, и есть
+    ли в данных дубли. При дублях - RAISE WARNING и skip вместо
+    падения всей транзакции; если constraint уже есть - просто
+    RAISE NOTICE.
+    """
     relation = qualified_name(raw_table, raw_schema)
     relation_literal = quote_literal(relation)
     constraint_literal = quote_literal(raw_constraint)
@@ -547,6 +639,7 @@ def generate_guarded_unique_constraint_sql(
 
 
 def generate_add_check_constraint_sql(change: Change) -> list[str]:
+    """ADD CONSTRAINT CHECK по описанию из source."""
     table = table_name(change)
     check = change.get("source") or {}
     name = constraint_name(check.get("name"))
@@ -557,17 +650,20 @@ def generate_add_check_constraint_sql(change: Change) -> list[str]:
 
 
 def generate_drop_column_sql(change: Change) -> list[str]:
+    """ALTER TABLE ... DROP COLUMN."""
     table = table_name(change)
     column = quote_ident(change["column"])
     return [f"ALTER TABLE {table} DROP COLUMN {column};"]
 
 
 def generate_drop_table_sql(change: Change) -> list[str]:
+    """DROP TABLE - destructive, в safe/risky выходит закомментированным."""
     table = table_name(change)
     return [f"DROP TABLE {table};"]
 
 
 def generate_drop_index_sql(change: Change) -> list[str]:
+    """DROP INDEX по target-имени, с учётом схемы."""
     index = change.get("target") or {}
     index_name = index.get("name")
     if not index_name:
@@ -579,6 +675,7 @@ def generate_drop_index_sql(change: Change) -> list[str]:
 def generate_drop_constraint_sql(
     change: Change, source_key: str = "target"
 ) -> list[str]:
+    """ALTER TABLE ... DROP CONSTRAINT для extra_fk/unique/check."""
     table = table_name(change)
     constraint = change.get(source_key) or {}
     name = required_constraint_name(constraint.get("name"), change["kind"])
@@ -586,6 +683,7 @@ def generate_drop_constraint_sql(
 
 
 def generate_primary_key_sql(change: Change) -> list[str]:
+    """DROP старого PK + ADD нового PK для different_primary_key."""
     table = table_name(change)
     target_name = required_constraint_name(change.get("target_name"), change["kind"])
     raw_table = change["table"]

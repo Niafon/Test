@@ -1,4 +1,11 @@
-﻿from typing import Any
+"""Оркестратор сравнения двух БД целиком.
+
+Тонкая обёртка вокруг introspection.* и compare.*: проходит по
+таблицам/колонкам/ключам/индексам/чекам и собирает единый список
+Change-записей. Никакой классификации (safe/risky/destructive) -
+этим занимается plan.py.
+"""
+from typing import Any
 
 from sqlalchemy.engine import Engine
 
@@ -33,13 +40,17 @@ from introspection import (
     get_unique_constraints_map,
 )
 
-# Изменения в структуре бд, которые мы будем собирать и возвращать в виде отчета
 Change = dict[str, Any]
 
-# Собираем полное описание таблицы для отчета
+
 def collect_table_definition(
     engine: Engine, table_name: str, schema: str | None = None
 ) -> Change:
+    """Собрать полное описание таблицы (колонки, PK, FK, UNIQUE, CHECK, индексы).
+
+    Нужно для missing_table/extra_table: чтобы сгенерировать CREATE
+    TABLE или показать в диагностике, что именно DROP TABLE заденет.
+    """
     return {
         "columns": [
             column_to_report(c) for c in get_columns(engine, table_name, schema=schema)
@@ -65,13 +76,21 @@ def collect_table_definition(
             index_to_report(i) for i in get_indexes(engine, table_name, schema=schema)
         ],
     }
-# Само ссравнение бд
+
+
 def compare_databases(
-    source_db: Engine, 
+    source_db: Engine,
     target_db: Engine,
     source_schema: str | None = None,
     target_schema: str | None = None,
 ) -> list[Change]:
+    """Сравнить две БД целиком и вернуть плоский список изменений.
+
+    Алгоритм: сначала находим расхождения в таблицах (missing/extra)
+    и для каждой такой таблицы подсасываем полное описание. Затем
+    идём по общим таблицам и сравниваем PK, FK, UNIQUE, индексы,
+    CHECK'и и атрибуты колонок.
+    """
     changes: list[Change] = []
     source_tables = get_tables(source_db, schema=source_schema)
     target_tables = get_tables(target_db, schema=target_schema)
@@ -84,9 +103,10 @@ def compare_databases(
                 source_db, change["table"], schema=source_schema
             )
         elif change["kind"] == "extra_table":
-            # Симметрично missing_table: для лишней в target таблицы собираем
-            # полное описание, чтобы DROP TABLE мог отчитаться, что именно
-            # удаляется, а диагностика - сколько строк и FK потеряется.
+            # Симметрично missing_table: для лишней в target таблицы
+            # собираем полное описание, чтобы DROP TABLE мог отчитаться,
+            # что именно удаляется, а диагностика - сколько строк и FK
+            # потеряется.
             change["target"] = collect_table_definition(
                 target_db, change["table"], schema=target_schema
             )

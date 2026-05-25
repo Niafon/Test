@@ -1,9 +1,18 @@
+"""Классификация diff'а по уровням риска и человекочитаемые описания.
+
+Каждое изменение из compare.* попадает в одну из корзин:
+- safe         - аддитивные операции, данных не теряем
+- risky        - может упасть на существующих данных
+- destructive  - явно теряет данные
+
+Дополнительно к каждому change прикручивается description -
+короткая фраза, которую видно в /generate ответе и в meta-файле.
+"""
 import re
 from typing import Any
 
 Change = dict[str, Any]
 
-# Типо enum тут патерны и тд
 _TYPE_PATTERN = re.compile(
     r"^(?P<base>[A-Z][A-Z0-9_]*(?:\s+[A-Z][A-Z0-9_]*)*?)"
     r"(?:\s*\((?P<p1>\d+)(?:\s*,\s*(?P<p2>\d+))?\))?\s*$"
@@ -19,8 +28,9 @@ _INTEGER_SIZES = {
     "BIGINT": 8,
 }
 
-# Прарсим
+
 def parse_type(type_string: str) -> tuple[str, list[int]]:
+    """Разобрать SQL-тип на базу и параметры (VARCHAR(50) -> ("VARCHAR", [50]))."""
     match = _TYPE_PATTERN.match((type_string or "").strip().upper())
     if not match:
         return (type_string or "").strip().upper(), []
@@ -28,12 +38,16 @@ def parse_type(type_string: str) -> tuple[str, list[int]]:
     params = [int(p) for p in (match.group("p1"), match.group("p2")) if p is not None]
     return base, params
 
-# Проверяем, что изменение типа безопасно (например, расширение размера строки или сужение int)
-# Типо расширить VARCHAR(50) до VARCHAR(255) безопасно, а сузить VARCHAR(255) до VARCHAR(50) - нет.
+
 def is_type_change_safe(source_type: str, target_type: str) -> bool:
+    """Безопасно ли менять тип target -> source без риска потери данных.
+
+    Расширение размера строки (VARCHAR(50) -> VARCHAR(255)) и расширение
+    int (SMALLINT -> BIGINT) безопасны. Сужение и смена базы между
+    несовместимыми типами - нет.
+    """
     source_base, source_params = parse_type(source_type)
     target_base, target_params = parse_type(target_type)
-    # типы совпадают, проверяем параметры (например, размер строки)
     if source_base == target_base:
         if not source_params and not target_params:
             return True
@@ -46,18 +60,23 @@ def is_type_change_safe(source_type: str, target_type: str) -> bool:
 
     return False
 
-# Название таблицы
+
 def _table_label(change: Change) -> str:
+    """Собрать читаемое имя таблицы для сообщения ("schema.table" или "table")."""
     schema = change.get("schema")
     table = change.get("table")
     return f"{schema}.{table}" if schema else str(table)
 
-# Описываем изменения
+
 def describe_change(change: Change) -> str:
+    """Сформировать человекочитаемое описание изменения.
+
+    Идёт в поле description каждого change. Текст рассчитан на то,
+    что его прочитает человек, который решает, применять SQL или нет.
+    """
     kind = change["kind"]
     table = _table_label(change)
-    # Далее можно понять и по ретурну че делает надо при каждом виде
-    # Описания генерировал, тк он хорошо понял контекст и написал много bolierplate текста и выборку
+
     if kind == "missing_table":
         return (
             f"Таблица '{table}' есть в эталоне, но отсутствует в целевой БД. "
@@ -188,20 +207,27 @@ def describe_change(change: Change) -> str:
 
     return f"Неизвестный тип изменения: {kind}"
 
-# Тут у колонок есть 3 прикола - если null был и становиться не нул, то это может упасть, если не указано дефолтное значение.
-#  Если дефолтное значение есть, то это безопасно. И если колонка была nullable,
-#  то это тоже безопасно, тк null останется валидным значением.
 
 def classify_missing_column(change: Change) -> str:
+    """Отнести добавление колонки к safe или risky.
+
+    NULL-колонка или колонка с DEFAULT - safe (можно добавить без
+    backfill'а). NOT NULL без DEFAULT - risky: на непустой таблице
+    ALTER TABLE упадёт без явного бэкфилла.
+    """
     if change.get("source_nullable"):
         return "safe"
     if change.get("source_default") is not None:
         return "safe"
     return "risky"
 
-# Классифицируем изменения по типам
 
 def classify_changes(changes: list[Change]) -> dict[str, list[Change]]:
+    """Разложить список изменений по корзинам safe / risky / destructive.
+
+    Заодно прикручивает каждое change поле description с человеко-
+    читаемым объяснением, что именно поменяется.
+    """
     plan: dict[str, list[Change]] = {
         "safe": [],
         "risky": [],
@@ -212,31 +238,27 @@ def classify_changes(changes: list[Change]) -> dict[str, list[Change]]:
         change["description"] = describe_change(change)
 
         kind = change["kind"]
-        # Добавить таблицу - норм, ведь данные нельзя потерять
         if kind == "missing_table":
             plan["safe"].append(change)
-        # Колонку тоже ок - но мы смотрим на проблему сверху беря функциую оттуда
         elif kind == "missing_column":
             plan[classify_missing_column(change)].append(change)
-        # При потенри индекса, если уникальный, то это может быть рискованно,
-        #  тк удаление уникального индекса может привести к появлению дублей,
-        #  которые раньше не могли появиться. Если индекс не уникальный,
-        #  то его удаление - это просто потеря оптимизации, но не потеря данных, так что это безопасно.
         elif kind == "missing_index":
+            # Уникальный индекс без UNIQUE constraint = был запрет на
+            # дубли. Удаление = риск, что появятся дубли. Обычный
+            # индекс - просто оптимизация.
             if (change.get("source") or {}).get("unique"):
                 plan["risky"].append(change)
             else:
                 plan["safe"].append(change)
-
         elif kind == "different_column_type":
             if is_type_change_safe(change.get("source", ""), change.get("target", "")):
                 plan["safe"].append(change)
             else:
                 plan["risky"].append(change)
-
         elif kind == "different_primary_key":
+            # Пересоздание PK блокирует таблицу и каскадирует на FK,
+            # которые на неё ссылаются - всегда destructive.
             plan["destructive"].append(change)
-
         elif kind in {
             "extra_table",
             "extra_column",
@@ -246,7 +268,6 @@ def classify_changes(changes: list[Change]) -> dict[str, list[Change]]:
             "extra_check_constraint",
         }:
             plan["destructive"].append(change)
-
         elif kind in {
             "different_column_nullable",
             "different_column_default",

@@ -1,4 +1,11 @@
-﻿from typing import Any
+"""Низкоуровневые функции попарного сравнения объектов схем.
+
+Здесь только чистые функции: на вход списки/мапы reflected-объектов
+SQLAlchemy, на выход - список Change. Никаких подключений к БД, всё
+доступно из памяти. Оркестрация (что с чем сравнивать) - в
+compare_database.py.
+"""
+from typing import Any
 
 from sqlalchemy.engine.interfaces import (
     ReflectedCheckConstraint,
@@ -9,16 +16,17 @@ from sqlalchemy.engine.interfaces import (
     ReflectedUniqueConstraint,
 )
 
-# Можно было бы разбить на несколько классов, но решил не плодить файли и все в одном сбацать
-# Тут тольуо функции для сравнивания схемок + тип для описания изменений, которые мы нашли при сравнении
-# Обычно чисто комонка и диффы
-
 Change = dict[str, Any]
 PrimaryKeyMap = dict[str, ReflectedPrimaryKeyConstraint]
 
-# Ютилити для распарсивания диктов, листов, туплов, сетов в тупли, чтобы можно
-# было сравнивать их по значению, а не по ссылке
+
 def freeze_value(value: Any) -> Any:
+    """Рекурсивно превратить dict/list/tuple/set в hashable-структуру.
+
+    Нужно, чтобы можно было класть в set/dict ключи, собранные из
+    reflected-объектов (options, dialect_options), и сравнивать их по
+    значению, а не по идентичности.
+    """
     if isinstance(value, dict):
         return tuple(sorted((k, freeze_value(v)) for k, v in value.items()))
     if isinstance(value, list | tuple):
@@ -27,10 +35,9 @@ def freeze_value(value: Any) -> Any:
         return tuple(sorted(freeze_value(v) for v in value))
     return value
 
-# Функции для сравнивания схемок и получения отчета об отличиях
+
 def column_to_report(column: ReflectedColumn) -> Change:
-# Превращаем колонку в дикт для удобного сравнения и генерации отчета
-# Тут можно было бы еще добавить всяких атрибутов, но для примера хватит этих трех
+    """Превратить reflected-колонку в плоский dict для отчёта/сравнения."""
     return {
         "name": column["name"],
         "type": str(column["type"]).upper(),
@@ -38,21 +45,26 @@ def column_to_report(column: ReflectedColumn) -> Change:
         "default": column.get("default"),
     }
 
-# Превращаем первичный ключ в дикт для удобного сравнения и генерации отчета
-def primary_key_to_report(pk: ReflectedPrimaryKeyConstraint) -> Change:
 
+def primary_key_to_report(pk: ReflectedPrimaryKeyConstraint) -> Change:
+    """Превратить reflected-PK в плоский dict для отчёта/сравнения."""
     return {
         "name": pk.get("name"),
         "constrained_columns": list(pk.get("constrained_columns") or []),
     }
 
-# Ищем отличия в списках таблиц, возвращаем список отличий и список общих таблиц для дальнейшего сравнения
+
 def get_diff_tables(
     source_table: list[str],
     target_table: list[str],
     target_schema: str | None = None,
 ) -> tuple[list[Change], list[str]]:
+    """Найти расхождения в списках таблиц.
 
+    Возвращает (diff, common): diff содержит missing_table/extra_table
+    записи, common - имена таблиц, присутствующих в обеих БД, чтобы
+    дальше прогнать по ним поколоночное сравнение.
+    """
     source_tables = set(source_table)
     target_tables = set(target_table)
 
@@ -78,17 +90,22 @@ def get_diff_tables(
             )
     for x in source_tables:
         if x in target_tables:
-            common_tables.append(x) # Тип данных для общих таблиц - просто строка с именем, так как для дальнейшего сравнения нам достаточно будет имени таблицы
+            common_tables.append(x)
     return diff_tables, common_tables
 
-# Ищем отличия в списках колонок, возвращаем список отличий и список общих колонок для дальнейшего сравнения
+
 def get_diff_columns(
     table_name: str,
     source_columns: list[ReflectedColumn],
     target_columns: list[ReflectedColumn],
     target_schema: str | None = None,
 ) -> tuple[list[Change], list[Change]]:
+    """Сравнить наборы колонок одной таблицы.
 
+    Возвращает (diff, common): diff - missing_column/extra_column,
+    common - колонки, по которым надо ещё пройтись по атрибутам
+    (тип, nullable, default).
+    """
     source_columns_by_name = {column["name"]: column for column in source_columns}
     target_columns_by_name = {column["name"]: column for column in target_columns}
 
@@ -99,9 +116,9 @@ def get_diff_columns(
     common_column_details: list[Change] = []
     for x in sorted(source_columns_set - target_columns_set):
         source_column = source_columns_by_name[x]
-        # Тут так много из-за того, что я хочу в отчете видеть не только имя колонки,
-        #  но и ее тип, nullable, дефолтное значение, чтобы было понятно, что именно
-        #  мы потеряли при отсутствии колонки в таргете
+        # Кладём тип, nullable и default в отчёт, чтобы человек видел,
+        # какая именно колонка отсутствует - по одному имени неясно,
+        # safe это будет добавление или risky.
         diff_columns.append(
             {
                 "kind": "missing_column",
@@ -141,11 +158,15 @@ def get_diff_columns(
         )
     return diff_columns, common_column_details
 
-# Ищем отличия в атрибутах общих колонок, возвращаем список отличий
+
 def get_diff_column_attrs(
     common_column_details: list[Change],
 ) -> list[Change]:
+    """Найти расхождения атрибутов колонок, существующих в обеих БД.
 
+    Для каждой common-колонки сравнивает тип, nullable и default;
+    каждое несовпадение даёт отдельный Change.
+    """
     attr_diffs: list[Change] = []
 
     for column in common_column_details:
@@ -196,12 +217,13 @@ def get_diff_column_attrs(
 
     return attr_diffs
 
-# Ищем отличия в первичных ключах, возвращаем список отличий
+
 def get_diff_primary_keys(
     source_pk: PrimaryKeyMap,
     target_pk: PrimaryKeyMap,
     target_schema: str | None = None,
 ) -> list[Change]:
+    """Найти таблицы, у которых PRIMARY KEY отличается составом колонок."""
     diffs: list[Change] = []
     common_tables = set(source_pk) & set(target_pk)
     for table in sorted(common_tables):
@@ -223,13 +245,17 @@ def get_diff_primary_keys(
 
     return diffs
 
-# Тут кароче мы нормализуем атрибуты тк они по разному могу бывть в бд
+
 def _portable_referred_schema(
     fk: ReflectedForeignKeyConstraint, owner_schema: str | None
 ) -> str | None:
-    # FK на свою же схему -> referred_schema=None, иначе при разных именах
-    # схем в source и target same-schema FK ошибочно классифицируется как
-    # разный, и при apply SQL ссылается на source-имя схемы.
+    """Нормализовать referred_schema для same-schema FK.
+
+    Если FK ссылается на свою же схему, выставляем referred_schema=None.
+    Иначе при разных именах схем в source и target same-schema FK
+    ошибочно классифицируется как разный, а при apply SQL ссылается на
+    source-имя схемы, которого в target может не быть.
+    """
     referred_schema = fk.get("referred_schema")
     if referred_schema == owner_schema:
         return None
@@ -239,6 +265,7 @@ def _portable_referred_schema(
 def normalize_foreign_key(
     fk: ReflectedForeignKeyConstraint, owner_schema: str | None = None
 ) -> tuple[Any, ...]:
+    """Сформировать ключ для сравнения FK по значению (без учёта имени)."""
     return (
         tuple(fk.get("constrained_columns") or []),
         _portable_referred_schema(fk, owner_schema),
@@ -247,10 +274,11 @@ def normalize_foreign_key(
         freeze_value(fk.get("options") or {}),
     )
 
-# Превращаем внешний ключ в дикт для удобного сравнения и генерации отчета
+
 def foreign_key_to_report(
     fk: ReflectedForeignKeyConstraint, owner_schema: str | None = None
 ) -> Change:
+    """Превратить reflected-FK в плоский dict для отчёта/сравнения."""
     return {
         "name": fk.get("name"),
         "constrained_columns": list(fk.get("constrained_columns") or []),
@@ -260,13 +288,19 @@ def foreign_key_to_report(
         "options": dict(fk.get("options") or {}),
     }
 
-# Ищем отличия в списках внешних ключей, возвращаем список отличий
+
 def get_diff_foreign_keys(
     source_fk: dict[str, list[ReflectedForeignKeyConstraint]],
     target_fk: dict[str, list[ReflectedForeignKeyConstraint]],
     target_schema: str | None = None,
     source_schema: str | None = None,
 ) -> list[Change]:
+    """Найти расхождения в наборах FK по таблицам.
+
+    Сравнение по нормализованному ключу (без имени constraint), потому
+    что в source и target имена могут быть автоматически разные, а
+    логически FK тот же.
+    """
     diffs: list[Change] = []
 
     common_tables = set(source_fk) & set(target_fk)
@@ -310,25 +344,26 @@ def get_diff_foreign_keys(
 
     return diffs
 
-# Нормализуем
-def normalize_unique_constraint(unique: ReflectedUniqueConstraint) -> tuple[str, ...]:
 
+def normalize_unique_constraint(unique: ReflectedUniqueConstraint) -> tuple[str, ...]:
+    """Сформировать ключ для сравнения UNIQUE по составу колонок."""
     return tuple(unique.get("column_names") or [])
 
-# в репорт кидаем
-def unique_constraint_to_report(unique: ReflectedUniqueConstraint) -> Change:
 
+def unique_constraint_to_report(unique: ReflectedUniqueConstraint) -> Change:
+    """Превратить reflected-UNIQUE в плоский dict для отчёта/сравнения."""
     return {
         "name": unique.get("name"),
         "columns": list(unique.get("column_names") or []),
     }
 
-# Ищем отличия в списках уникальных ключей, возвращаем список отличий
+
 def get_diff_unique_constraints(
     source_uniques: dict[str, list[ReflectedUniqueConstraint]],
     target_uniques: dict[str, list[ReflectedUniqueConstraint]],
     target_schema: str | None = None,
 ) -> list[Change]:
+    """Найти расхождения UNIQUE-constraint'ов по таблицам."""
     diffs: list[Change] = []
 
     common_tables = set(source_uniques) & set(target_uniques)
@@ -366,18 +401,18 @@ def get_diff_unique_constraints(
 
     return diffs
 
-# Нормализуем индекс для сравнения
-def normalize_index(index: ReflectedIndex) -> tuple[Any, ...]:
 
+def normalize_index(index: ReflectedIndex) -> tuple[Any, ...]:
+    """Сформировать ключ для сравнения индекса по колонкам/uniqueness/опциям."""
     return (
         tuple(index.get("column_names") or []),
         bool(index.get("unique") or False),
         freeze_value(index.get("dialect_options") or {}),
     )
 
-# Превращаем индекс в дикт для удобного сравнения и генерации отчета
-def index_to_report(index: ReflectedIndex) -> Change:
 
+def index_to_report(index: ReflectedIndex) -> Change:
+    """Превратить reflected-индекс в плоский dict для отчёта/сравнения."""
     return {
         "name": index.get("name"),
         "columns": list(index.get("column_names") or []),
@@ -385,12 +420,13 @@ def index_to_report(index: ReflectedIndex) -> Change:
         "dialect_options": dict(index.get("dialect_options") or {}),
     }
 
-# Ищем отличия в списках индексов, возвращаем список отличий
+
 def get_diff_indexes(
     source_indexes: dict[str, list[ReflectedIndex]],
     target_indexes: dict[str, list[ReflectedIndex]],
     target_schema: str | None = None,
 ) -> list[Change]:
+    """Найти расхождения в наборах индексов по таблицам."""
     diffs: list[Change] = []
 
     common_tables = set(source_indexes) & set(target_indexes)
@@ -430,23 +466,24 @@ def get_diff_indexes(
 
 
 def normalize_check_constraint(check: ReflectedCheckConstraint) -> str:
-
+    """Сформировать ключ для сравнения CHECK по тексту выражения."""
     return (check.get("sqltext") or "").strip()
 
 
 def check_constraint_to_report(check: ReflectedCheckConstraint) -> Change:
-
+    """Превратить reflected-CHECK в плоский dict для отчёта/сравнения."""
     return {
         "name": check.get("name"),
         "sqltext": check.get("sqltext"),
     }
 
-# Чекаем чеки на отличия, возвращаем список отличий
+
 def get_diff_check_constraints(
     source_checks: dict[str, list[ReflectedCheckConstraint]],
     target_checks: dict[str, list[ReflectedCheckConstraint]],
     target_schema: str | None = None,
 ) -> list[Change]:
+    """Найти расхождения в наборах CHECK-constraint'ов по таблицам."""
     diffs: list[Change] = []
 
     common_tables = set(source_checks) & set(target_checks)
@@ -483,6 +520,3 @@ def get_diff_check_constraints(
             )
 
     return diffs
-
-
-# Итого - тут для сравнивания схемы функции
