@@ -129,6 +129,45 @@ def reference_table_name(fk: Change, fallback_schema: str | None = None) -> str:
     return qualified_name(referred_table, referred_schema)
 
 
+def foreign_key_options_sql(fk: Change) -> str:
+    options = fk.get("options") or {}
+    parts: list[str] = []
+
+    match = format_fk_option(options.get("match"), {"FULL", "PARTIAL", "SIMPLE"})
+    if match:
+        parts.append(f"MATCH {match}")
+
+    ondelete = format_fk_option(
+        options.get("ondelete"),
+        {"NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"},
+    )
+    if ondelete:
+        parts.append(f"ON DELETE {ondelete}")
+
+    onupdate = format_fk_option(
+        options.get("onupdate"),
+        {"NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"},
+    )
+    if onupdate:
+        parts.append(f"ON UPDATE {onupdate}")
+
+    if "deferrable" in options:
+        parts.append("DEFERRABLE" if options.get("deferrable") else "NOT DEFERRABLE")
+
+    initially = format_fk_option(options.get("initially"), {"DEFERRED", "IMMEDIATE"})
+    if initially:
+        parts.append(f"INITIALLY {initially}")
+
+    return (" " + " ".join(parts)) if parts else ""
+
+
+def format_fk_option(value: Any, allowed: set[str]) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).replace("_", " ").upper()
+    return normalized if normalized in allowed else None
+
+
 def generate_sql(changes: list[Change], mode: Mode) -> str:
     """Сформировать итоговый SQL-скрипт по списку изменений и режиму.
 
@@ -435,7 +474,10 @@ def generate_create_table_fk_sql(change: Change) -> list[str]:
         ref_table = reference_table_name(fk, fallback_schema=schema)
         ref_cols = quote_ident_list(fk.get("referred_columns") or [])
         name = constraint_name(fk.get("name"))
-        clause = f"FOREIGN KEY ({cols}) REFERENCES {ref_table} ({ref_cols})"
+        clause = (
+            f"FOREIGN KEY ({cols}) REFERENCES {ref_table} ({ref_cols})"
+            f"{foreign_key_options_sql(fk)}"
+        )
         if name:
             statements.append(
                 f"ALTER TABLE {table} ADD CONSTRAINT {name} {clause};"
@@ -583,7 +625,10 @@ def generate_add_foreign_key_sql(change: Change) -> list[str]:
     cols = quote_ident_list(fk.get("constrained_columns") or [])
     ref_table = reference_table_name(fk, fallback_schema=change.get("schema"))
     ref_cols = quote_ident_list(fk.get("referred_columns") or [])
-    clause = f"FOREIGN KEY ({cols}) REFERENCES {ref_table} ({ref_cols})"
+    clause = (
+        f"FOREIGN KEY ({cols}) REFERENCES {ref_table} ({ref_cols})"
+        f"{foreign_key_options_sql(fk)}"
+    )
     if name:
         return [f"ALTER TABLE {table} ADD CONSTRAINT {name} {clause} NOT VALID;"]
     return [f"ALTER TABLE {table} ADD {clause} NOT VALID;"]

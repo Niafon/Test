@@ -5,6 +5,7 @@ import pytest
 from sql_generator import (
     format_default,
     generate_add_column_sql,
+    generate_add_foreign_key_sql,
     generate_alter_column_default_sql,
     generate_alter_column_type_sql,
     generate_create_table_fk_sql,
@@ -177,6 +178,61 @@ def test_generate_sql_emits_cyclic_fks_after_all_create_table():
     fk_b = sql.index('ADD CONSTRAINT "b_a_id_fk"')
     # Оба CREATE TABLE идут раньше любого ALTER TABLE с FK.
     assert max(create_a, create_b) < min(fk_a, fk_b)
+
+
+def test_foreign_key_options_are_copied_for_existing_table():
+    change = {
+        "kind": "missing_foreign_key",
+        "table": "orders",
+        "schema": None,
+        "source": {
+            "name": "orders_user_id_fk",
+            "constrained_columns": ["user_id"],
+            "referred_schema": None,
+            "referred_table": "users",
+            "referred_columns": ["id"],
+            "options": {
+                "ondelete": "CASCADE",
+                "onupdate": "SET NULL",
+                "deferrable": True,
+                "initially": "DEFERRED",
+            },
+        },
+    }
+    assert generate_add_foreign_key_sql(change) == [
+        'ALTER TABLE "orders" ADD CONSTRAINT "orders_user_id_fk" '
+        'FOREIGN KEY ("user_id") REFERENCES "users" ("id") '
+        "ON DELETE CASCADE ON UPDATE SET NULL DEFERRABLE INITIALLY DEFERRED NOT VALID;"
+    ]
+
+
+def test_foreign_key_options_are_copied_for_new_table_deferred_fk():
+    change = {
+        "kind": "missing_table",
+        "table": "orders",
+        "schema": None,
+        "source": {
+            "foreign_keys": [
+                {
+                    "name": "orders_user_id_fk",
+                    "constrained_columns": ["user_id"],
+                    "referred_schema": None,
+                    "referred_table": "users",
+                    "referred_columns": ["id"],
+                    "options": {
+                        "match": "FULL",
+                        "ondelete": "SET DEFAULT",
+                        "deferrable": False,
+                    },
+                }
+            ],
+        },
+    }
+    assert generate_create_table_fk_sql(change) == [
+        'ALTER TABLE "orders" ADD CONSTRAINT "orders_user_id_fk" '
+        'FOREIGN KEY ("user_id") REFERENCES "users" ("id") '
+        "MATCH FULL ON DELETE SET DEFAULT NOT DEFERRABLE;"
+    ]
 
 
 if __name__ == "__main__":
