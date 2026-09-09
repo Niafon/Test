@@ -1,0 +1,45 @@
+name: Questboard Windows Release
+on:
+  push:
+    branches: [questboard-prod-v1]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        working-directory: questboard
+        run: npm install --no-audit --no-fund
+      - name: Generate Windows icon bundle
+        working-directory: questboard
+        run: npm run tauri icon assets/icon.svg
+      - name: TypeScript and web build
+        working-directory: questboard
+        run: npm run build
+      - name: Build NSIS release
+        working-directory: questboard
+        run: npm run tauri build -- --bundles nsis
+      - name: Stage release
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item questboard/src-tauri/target/release/questboard.exe release/Questboard.exe
+          $installer = Get-ChildItem questboard/src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          if (-not $installer) { throw 'NSIS installer was not produced' }
+          Copy-Item $installer.FullName release/Questboard-Setup.exe
+          Get-FileHash release/Questboard.exe -Algorithm SHA256 | Format-List | Out-File release/SHA256.txt
+          Get-FileHash release/Questboard-Setup.exe -Algorithm SHA256 | Format-List | Out-File -Append release/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: questboard-windows-v1
+          path: release/*
+          if-no-files-found: error
+          retention-days: 30
