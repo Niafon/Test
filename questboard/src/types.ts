@@ -1,0 +1,10 @@
+export type BlockType = 'quest' | 'milestone' | 'note' | 'gallery' | 'links' | 'folders' | 'stats' | 'focus' | 'goal' | 'activity'
+export type QuestDifficulty = 'tiny' | 'normal' | 'hard' | 'boss'
+export type Quest = { id:string; title:string; xp:number; done:boolean; difficulty:QuestDifficulty; dueAt?:string }
+export type LinkItem = { id:string; label:string; url:string }
+export type FolderItem = { id:string; label:string; path:string }
+export type GalleryItem = { id:string; src:string; caption?:string }
+export type ActivityItem = { id:string; text:string; at:string; xp?:number }
+export type DashboardBlock = { id:string; type:BlockType; title:string; x:number; y:number; w:number; h:number; accent?:string; detached?:boolean; data?:Record<string, unknown> }
+export type AppSettings = { autostart:boolean; compactMode:boolean; reduceMotion:boolean; glassStrength:number; hotkey:string; sound:boolean; syncEnabled:boolean; syncUrl:string; syncToken:string; syncWorkspace:string; lastSyncAt:number }
+export type QuestboardState = { version:number; level:number; xp:number; nextLevelXp:number; activeProject:string; blocks:DashboardBlock[]; quests:Quest[]; links:LinkItem[]; folders:FolderItem[]; gallery:GalleryItem[]; activities:ActivityItem[]; note:string; focusSeconds:number; focusRunning:boolean; settings:AppSettings }
