@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Questboard v1 desktop permissions",
+  "windows": ["main", "block-*"],
+  "permissions": ["core:default","core:window:allow-close","core:window:allow-hide","core:window:allow-minimize","core:window:allow-start-dragging","core:window:allow-set-position","core:window:allow-set-focus","autostart:default","global-shortcut:default","dialog:default","fs:default","shell:allow-open","sql:default"]
+}
