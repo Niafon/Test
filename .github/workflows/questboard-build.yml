@@ -35,6 +35,17 @@ jobs:
           $installer = Get-ChildItem questboard/src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
           if (-not $installer) { throw 'NSIS installer was not produced' }
           Copy-Item $installer.FullName release/Questboard-Setup.exe
+      - name: Smoke launch release executable
+        shell: pwsh
+        run: |
+          $p = Start-Process (Resolve-Path 'release/Questboard.exe') -PassThru
+          Start-Sleep -Seconds 6
+          $p.Refresh()
+          if ($p.HasExited) { throw "Questboard exited during smoke launch with code $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+      - name: Generate release hashes
+        shell: pwsh
+        run: |
           Get-FileHash release/Questboard.exe -Algorithm SHA256 | Format-List | Out-File release/SHA256.txt
           Get-FileHash release/Questboard-Setup.exe -Algorithm SHA256 | Format-List | Out-File -Append release/SHA256.txt
       - uses: actions/upload-artifact@v4
